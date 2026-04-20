@@ -33,7 +33,7 @@ class ProtocolConfig:
 @dataclass
 class SerialConfig:
     port: str = "/dev/ttyUSB0"
-    baudrate: int = 921600
+    baudrate: int = 115200
     # Si la Jetson no recibe nada del ESP32 en este tiempo,
     # consideramos el link caído (no detiene motores directamente;
     # eso lo hace el ESP32 por su propio watchdog).
