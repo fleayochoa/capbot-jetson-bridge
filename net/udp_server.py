@@ -66,8 +66,9 @@ class UdpCommandServer(asyncio.DatagramProtocol):
         state.cmds_received += 1
 
         # Dispatch por tipo
+        log.debug("Tipo de mensaje: %s", frame.msg_type)
         if frame.msg_type == MsgType.CMD_MOTOR:
-            log.debug("motor command received")
+            log.debug("Payload bruto: %s", frame.payload.hex())
             try:
                 left, right, aux = decode_motor(frame.payload)
             except Exception:
