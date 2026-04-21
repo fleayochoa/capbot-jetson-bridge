@@ -17,11 +17,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 log = logging.getLogger(__name__)
 
-Callback = Callable[[Any], Awaitable[None] | None]
+Callback = Callable[[Any], Optional[Awaitable[None]]]
 
 
 class EventBus:
