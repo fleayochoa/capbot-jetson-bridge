@@ -67,12 +67,12 @@ class UdpCommandServer(asyncio.DatagramProtocol):
 
         # Dispatch por tipo
         if frame.msg_type == MsgType.CMD_MOTOR:
+            log.debug("motor command received")
             try:
                 left, right, aux = decode_motor(frame.payload)
             except Exception:
                 return
             bus.emit(Ev.CMD_MOTOR, {"left": left, "right": right, "aux": aux, "seq": frame.seq})
-            log.debug("CMD_MOTOR de %s: left=%d right=%d aux=%d seq=%d", host_ip, left, right, aux, frame.seq)
         elif frame.msg_type == MsgType.CMD_HEARTBEAT:
             bus.emit(Ev.CMD_HEARTBEAT, {"seq": frame.seq})
         elif frame.msg_type == MsgType.CMD_EMERGENCY:
