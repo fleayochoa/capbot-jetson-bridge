@@ -43,9 +43,11 @@ try:
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst, GLib
     _GST_AVAILABLE = True
+    print("GStreamer disponible: video pipeline activada")
 except (ImportError, ValueError):  # pragma: no cover
     Gst = GLib = None
     _GST_AVAILABLE = False
+    print("GStreamer no disponible: video pipeline desactivada")
 
 from config import CFG
 from core.bus import Ev, bus
