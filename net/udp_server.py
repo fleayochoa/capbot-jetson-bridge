@@ -10,11 +10,13 @@ El ACK se envía siempre, incluso para heartbeats, para que el host pueda
 medir RTT y detectar pérdida. La emergencia es el caso crítico: el host
 reintenta 50 veces hasta recibir ACK, así que el ACK DEBE salir.
 """
-from __future__ import annotations
-
+# PY36: Eliminado `from __future__ import annotations`.
 import asyncio
 import logging
 import socket
+
+# PY36: Optional y Tuple de typing (el original usaba `X | None` y `tuple[str, int]`).
+from typing import Optional, Tuple  # PY36: añadido
 
 from config import CFG
 from core.bus import Ev, bus
@@ -26,9 +28,10 @@ log = logging.getLogger(__name__)
 
 class UdpCommandServer(asyncio.DatagramProtocol):
     def __init__(self) -> None:
-        self._transport: asyncio.DatagramTransport | None = None
-        # Socket separado para ACKs (puerto distinto por especificación)
-        self._ack_sock: socket.socket | None = None
+        # PY36: `asyncio.DatagramTransport | None` → `Optional[asyncio.DatagramTransport]`.
+        self._transport = None  # type: Optional[asyncio.DatagramTransport]
+        # PY36: `socket.socket | None` → `Optional[socket.socket]`.
+        self._ack_sock = None  # type: Optional[socket.socket]
 
     # asyncio.DatagramProtocol API
     def connection_made(self, transport) -> None:
@@ -42,7 +45,8 @@ class UdpCommandServer(asyncio.DatagramProtocol):
         self._ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._ack_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
 
-    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+    # PY36: Firma original `addr: tuple[str, int]`. Reemplazado por Tuple[str, int].
+    def datagram_received(self, data: bytes, addr: Tuple[str, int]) -> None:
         host_ip = addr[0]
         try:
             frame = Frame.unpack(data)
@@ -51,8 +55,6 @@ class UdpCommandServer(asyncio.DatagramProtocol):
             log.debug("frame inválido de %s: %s", host_ip, exc)
             return
 
-        # Auto-descubrimiento del host: el primer paquete válido fija la IP
-        # si no vino por CLI. Si vino por CLI, sólo aceptamos desde esa IP.
         if CFG.network.host_ip and host_ip != CFG.network.host_ip:
             log.warning("ignorando comando de %s (host configurado: %s)", host_ip, CFG.network.host_ip)
             return
@@ -97,14 +99,18 @@ class UdpCommandServer(asyncio.DatagramProtocol):
     def error_received(self, exc: Exception) -> None:
         log.error("Error UDP: %s", exc)
 
-    def connection_lost(self, exc: Exception | None) -> None:
+    # PY36: Firma original `exc: Exception | None` → Optional[Exception].
+    def connection_lost(self, exc: Optional[Exception]) -> None:
         log.info("UDP cerrado: %s", exc)
         if self._ack_sock:
             self._ack_sock.close()
 
 
-async def run_udp_server(stop_event: asyncio.Event) -> None:
-    loop = asyncio.get_running_loop()
+# PY36: El original no recibía `loop`. Añadido como parámetro porque:
+#       - En 3.6 no existe `asyncio.get_running_loop()`.
+#       - En 3.6 `asyncio.get_event_loop()` funciona pero es ambiguo cuando
+#         hay varios loops; es más claro que main.py pase el suyo.
+async def run_udp_server(stop_event: asyncio.Event, loop: asyncio.AbstractEventLoop) -> None:
     transport, _ = await loop.create_datagram_endpoint(
         UdpCommandServer,
         local_addr=(CFG.network.listen_host, CFG.network.udp_cmd_port),

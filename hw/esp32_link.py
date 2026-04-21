@@ -12,11 +12,13 @@ Responsabilidades:
 El I/O serial se ejecuta en un executor para no bloquear el loop asyncio
 (pyserial es síncrono). La escritura se serializa con una cola.
 """
-from __future__ import annotations
-
+# PY36: Eliminado `from __future__ import annotations`.
 import asyncio
 import logging
 import time
+
+# PY36: Optional en vez de `X | None` (3.10+).
+from typing import Optional  # PY36: añadido
 
 try:
     import serial
@@ -42,9 +44,21 @@ _HEARTBEAT_INTERVAL_S = 0.05
 
 
 class Esp32Link:
-    def __init__(self) -> None:
-        self._ser: serial.Serial | None = None
-        self._tx_queue: asyncio.Queue[bytes] = asyncio.Queue()
+    # PY36: El constructor ahora recibe el loop explícitamente. Motivo:
+    #       - En el original, `asyncio.Queue()` se construía en `__init__`
+    #         sin loop. En 3.6 eso intenta capturar `get_event_loop()` y
+    #         si no hay uno creado todavía (o está asociado a otro hilo)
+    #         se dispara RuntimeError.
+    #       - En 3.10+ Queue ya no necesita loop; en 3.8 se deprecó el
+    #         parámetro; en 3.6 todavía es la forma recomendada.
+    def __init__(self, loop=None):  # PY36: añadido loop
+        self._loop = loop or asyncio.get_event_loop()  # PY36: añadido
+        # PY36: Anotación `serial.Serial | None` → `Optional[serial.Serial]`.
+        self._ser = None  # type: Optional["serial.Serial"]
+        # PY36: Anotación `asyncio.Queue[bytes]` no se puede escribir en 3.6
+        #       (la Queue no es subscriptible antes de 3.9). Creamos sin
+        #       anotación genérica y pasamos `loop=` explícito.
+        self._tx_queue = asyncio.Queue(loop=self._loop)  # PY36: añadido loop=
         self._buffer = SerialFrameBuffer()
         self._running = False
 
@@ -57,13 +71,17 @@ class Esp32Link:
         self._running = True
         self._subscribe_bus()
 
-        loop = asyncio.get_running_loop()
+        # PY36: El original hacía `loop = asyncio.get_running_loop()` (3.7+).
+        #       Usamos el loop guardado en __init__ (que es el actual cuando
+        #       arranca el servicio).
+        loop = self._loop
 
-        # Tareas en paralelo: reader, writer, heartbeat
-        reader_task = asyncio.create_task(self._reader_loop())
-        writer_task = asyncio.create_task(self._writer_loop())
-        hb_task = asyncio.create_task(self._heartbeat_loop())
-        watchdog_task = asyncio.create_task(self._esp32_watchdog())
+        # PY36: `asyncio.create_task` no existe en 3.6. Usamos
+        #       `loop.create_task`, disponible desde 3.4.2.
+        reader_task = loop.create_task(self._reader_loop())
+        writer_task = loop.create_task(self._writer_loop())
+        hb_task = loop.create_task(self._heartbeat_loop())
+        watchdog_task = loop.create_task(self._esp32_watchdog())
 
         try:
             await stop_event.wait()
@@ -134,7 +152,9 @@ class Esp32Link:
     # Lectura
     # --------------------------------------------------------
     async def _reader_loop(self) -> None:
-        loop = asyncio.get_running_loop()
+        # PY36: El original volvía a llamar a `asyncio.get_running_loop()`
+        #       aquí. Reutilizamos self._loop para consistencia.
+        loop = self._loop
         while self._running:
             if self._ser is None or not self._ser.is_open:
                 if not self._open_port():
@@ -159,11 +179,9 @@ class Esp32Link:
         ser = self._ser
         if ser is None:
             return b""
-        # Leer lo que haya disponible; si no hay nada, block corto por timeout
         waiting = ser.in_waiting
         if waiting > 0:
             return ser.read(waiting)
-        # Lectura bloqueante con timeout=50ms para no girar ocioso
         return ser.read(1)
 
     def _dispatch_frame(self, fr) -> None:
@@ -182,8 +200,7 @@ class Esp32Link:
     def _handle_telemetry(self, payload: bytes) -> None:
         """Telemetría: por defecto asumimos JSON UTF-8 para prototipar.
 
-        Si el firmware envía struct binario, aquí se deserializa. La clave
-        es emitir un `dict` en el bus para que el WS server lo publique.
+        Si el firmware envía struct binario, aquí se deserializa.
         """
         try:
             import json
@@ -191,9 +208,6 @@ class Esp32Link:
             if not isinstance(data, dict):
                 return
         except (UnicodeDecodeError, ValueError):
-            # Fallback: si el payload es binario fijo, decodificar aquí.
-            # Ejemplo (ajustar con firmware real):
-            #   data = dict(zip(["imu_x","imu_y","imu_z"], struct.unpack("<hhh", payload)))
             return
         bus.emit(Ev.TELEMETRY, data)
 
@@ -201,7 +215,7 @@ class Esp32Link:
     # Escritura
     # --------------------------------------------------------
     async def _writer_loop(self) -> None:
-        loop = asyncio.get_running_loop()
+        loop = self._loop  # PY36: self._loop en vez de get_running_loop()
         while self._running:
             try:
                 pkt = await asyncio.wait_for(self._tx_queue.get(), timeout=0.2)
@@ -210,7 +224,7 @@ class Esp32Link:
             except asyncio.CancelledError:
                 return
             if self._ser is None or not self._ser.is_open:
-                continue  # puerto caído: descartamos (el heartbeat repone)
+                continue
             try:
                 await loop.run_in_executor(None, self._ser.write, pkt)
             except (OSError, serial.SerialException) as exc:

@@ -1,0 +1,15 @@
+# Dependencias del servicio Jetson — pinned para Python 3.6
+#
+# NOTA IMPORTANTE: Python 3.6 llegó a EOL el 2021-12-23. Estas versiones son
+# las últimas que soportan 3.6. Instalar con:
+#   pip install -r requirements.txt
+
+# Backport oficial de dataclasses (stdlib a partir de 3.7).
+dataclasses==0.8; python_version < "3.7"
+
+# websockets 10.0 dejó de soportar 3.6. 9.1 es la última compatible.
+# Cambio de API notable: handler recibe (ws, path), no (ws,).
+websockets==9.1
+
+# pyserial no tiene problemas con 3.6.
+pyserial>=3.4,<4.0

@@ -6,13 +6,14 @@ Layout little-endian, 16 bytes fijos:
 CRC16-CCITT (poly 0x1021, init 0xFFFF) sobre los primeros 14 bytes.
 
 Este módulo debe mantenerse SINCRONIZADO con host_dashboard/protocol/udp_frame.py.
-Cualquier cambio en el wire format debe tocar ambos archivos a la vez.
 """
-from __future__ import annotations
-
+# PY36: Eliminado `from __future__ import annotations`.
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
+
+# PY36: `Tuple` desde typing en vez de `tuple[...]` (3.9+).
+from typing import Tuple  # PY36: añadido
 
 from config import CFG
 
@@ -44,7 +45,7 @@ class Frame:
 
     def pack(self) -> bytes:
         if len(self.payload) != 6:
-            raise ValueError(f"payload debe ser 6 bytes")
+            raise ValueError("payload debe ser 6 bytes")
         header = struct.pack(
             "<HBBI6s",
             CFG.protocol.magic,
@@ -59,18 +60,20 @@ class Frame:
     @classmethod
     def unpack(cls, data: bytes) -> "Frame":
         if len(data) != CFG.protocol.frame_size:
-            raise ValueError(f"frame debe ser {CFG.protocol.frame_size} bytes")
+            raise ValueError("frame debe ser {} bytes".format(CFG.protocol.frame_size))
         magic, version, msg_type, seq, payload, crc = struct.unpack("<HBBI6sH", data)
         if magic != CFG.protocol.magic:
-            raise ValueError(f"magic inválido")
+            raise ValueError("magic inválido")
         if version != CFG.protocol.version:
-            raise ValueError(f"versión {version} no soportada")
+            raise ValueError("versión {} no soportada".format(version))
         if crc16_ccitt(data[:14]) != crc:
             raise ValueError("CRC inválido")
         return cls(msg_type=msg_type, seq=seq, payload=payload)
 
 
-def decode_motor(payload: bytes) -> tuple[int, int, int]:
+# PY36: Firma original `-> tuple[int, int, int]`. El genérico `tuple[...]` es 3.9+.
+#       Usamos `Tuple[int, int, int]` de `typing`.
+def decode_motor(payload: bytes) -> Tuple[int, int, int]:
     return struct.unpack("<hhh", payload)
 
 

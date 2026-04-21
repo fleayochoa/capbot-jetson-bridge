@@ -19,11 +19,13 @@ Tipos de mensaje propuestos (ajustar con firmware del ESP32):
 Este módulo sólo provee encode/decode genéricos; el mapeo de tipos vive en
 hw/esp32_link.py.
 """
-from __future__ import annotations
-
+# PY36: Eliminado `from __future__ import annotations`.
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
+
+# PY36: `List` de typing para `-> list[SerFrame]` original (3.9+).
+from typing import List  # PY36: añadido
 
 from protocol.udp_frame import crc16_ccitt  # reutilizamos la misma CRC
 
@@ -41,15 +43,6 @@ class SerMsgType(IntEnum):
 
 # ------------------------------------------------------------
 # COBS (Consistent Overhead Byte Stuffing)
-# ------------------------------------------------------------
-# Implementación canónica single-pass:
-#   - Recorremos data una sola vez, acumulando en `out` un "code byte"
-#     seguido de hasta 254 bytes no-cero.
-#   - Cuando encontramos un 0 en `data`, cerramos el bloque actual
-#     escribiendo el code y abrimos uno nuevo.
-#   - Cuando el bloque llega a 254 bytes sin encontrar cero, cerramos con
-#     code=0xFF (marcador "sin cero al final") y abrimos nuevo bloque SIN
-#     consumir nada. El decoder distingue 0xFF porque no reinserta cero.
 # ------------------------------------------------------------
 def cobs_encode(data: bytes) -> bytes:
     out = bytearray([0])       # placeholder del primer code
@@ -86,8 +79,6 @@ def cobs_decode(data: bytes) -> bytes:
             raise ValueError("código COBS se pasa del final")
         out.extend(data[i + 1:end])
         i = end
-        # Un cero implícito se reinserta entre bloques SALVO que el bloque
-        # haya llegado a 254 bytes (code==0xFF) o estemos al final.
         if code < 0xFF and i < n:
             out.append(0)
     return bytes(out)
@@ -117,7 +108,9 @@ class SerFrame:
             raise ValueError("frame truncado")
         msg_type, length = raw[0], raw[1]
         if len(raw) != 2 + length + 2:
-            raise ValueError(f"longitud inconsistente: decl={length}, real={len(raw) - 4}")
+            # PY36: f-strings funcionan en 3.6 sin problema; las dejamos.
+            raise ValueError("longitud inconsistente: decl={}, real={}".format(
+                length, len(raw) - 4))
         payload = raw[2:2 + length]
         (crc_recv,) = struct.unpack("<H", raw[2 + length:])
         expected = crc16_ccitt(raw[:2 + length])
@@ -136,8 +129,12 @@ class SerialFrameBuffer:
         self._buf = bytearray()
         self._max = max_frame_bytes
 
-    def feed(self, data: bytes) -> list[SerFrame]:
-        frames: list[SerFrame] = []
+    # PY36: Firma original `-> list[SerFrame]`. En 3.6 no se puede subscribir
+    #       `list` como tipo genérico → `List[SerFrame]`.
+    def feed(self, data: bytes) -> List[SerFrame]:
+        # PY36: Igual con la variable local anotada: usamos anotación de tipo
+        #       como comentario para no depender del PEP 526 con genéricos.
+        frames = []  # type: List[SerFrame]
         for b in data:
             if b == DELIMITER:
                 if self._buf:

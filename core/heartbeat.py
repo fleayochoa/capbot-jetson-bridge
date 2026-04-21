@@ -7,12 +7,8 @@ datagrama UDP válido recibido del host (motor, heartbeat o emergencia).
 Un bucle asyncio revisa periódicamente si el timestamp está más viejo que
 el umbral y, en ese caso, emite `STOP_MOTORS` una única vez hasta que el host
 vuelva.
-
-De la misma forma podríamos vigilar el ESP32, pero por el diseño el ESP32 tiene
-su propio watchdog contra la Jetson (requisito). Aquí sólo reportamos.
 """
-from __future__ import annotations
-
+# PY36: Eliminado `from __future__ import annotations`.
 import asyncio
 import logging
 import time
@@ -65,6 +61,4 @@ async def run_host_watchdog() -> None:
 
 def _touch_host(data) -> None:
     """Refresca el timestamp del host cada vez que llega un comando."""
-    # El UDP server ya actualiza state.host_last_seen; este callback es
-    # redundante pero explícito (idempotente).
     state.host_last_seen = time.time()

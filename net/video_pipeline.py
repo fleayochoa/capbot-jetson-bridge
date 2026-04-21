@@ -1,39 +1,20 @@
 """Pipeline GStreamer que captura de la cámara IMX219 y la envía por UDP/RTP.
 
 En Jetson Nano (JetPack 4.x) la captura es por `nvarguscamerasrc` y el
-encoder H.264 por hardware es `nvv4l2h264enc`. Estos elementos tienen
-latencia mínima cuando se configuran con los caps correctos.
+encoder H.264 por hardware es `nvv4l2h264enc`.
 
 Pipeline:
     nvarguscamerasrc sensor-id=0
       ! video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1
-      ! nvvidconv                              # conversión en GPU
+      ! nvvidconv
       ! video/x-raw(memory:NVMM),format=NV12
-      ! nvv4l2h264enc insert-sps-pps=true
-                       iframeinterval=15
-                       idrinterval=15
-                       maxperf-enable=1
-                       preset-level=1          # low-latency
-                       bitrate=4000000
-                       control-rate=1          # variable
+      ! nvv4l2h264enc insert-sps-pps=true iframeinterval=15 idrinterval=15
+                       maxperf-enable=1 preset-level=1 bitrate=4000000 control-rate=1
       ! h264parse config-interval=1
       ! rtph264pay pt=96 config-interval=1 mtu=1400
       ! udpsink host=<HOST> port=5000 sync=false async=false
-
-Notas:
-  * `maxperf-enable=1` fija relojes de GPU/NVDEC al máximo → menos latencia
-    a costa de más consumo. Perfecto para teleoperación.
-  * `preset-level=1` (UltraFastPreset) minimiza latencia.
-  * `mtu=1400` evita fragmentación IP en redes domésticas.
-  * `config-interval=1` reenvía SPS/PPS cada segundo: cliente nuevo o tras
-    pérdida se recupera rápido.
-
-La clase maneja arranque/parada y reinicio ante error. El host_ip puede
-cambiar en runtime (p.ej. se detectó por UDP): exponemos `set_host()` que
-reconstruye la pipeline.
 """
-from __future__ import annotations
-
+# PY36: Eliminado `from __future__ import annotations`.
 import asyncio
 import logging
 from typing import Optional
@@ -43,11 +24,9 @@ try:
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst, GLib
     _GST_AVAILABLE = True
-    print("GStreamer disponible: video pipeline activada")
 except (ImportError, ValueError):  # pragma: no cover
     Gst = GLib = None
     _GST_AVAILABLE = False
-    print("GStreamer no disponible: video pipeline desactivada")
 
 from config import CFG
 from core.bus import Ev, bus
@@ -59,29 +38,48 @@ log = logging.getLogger(__name__)
 def _build_pipeline_str(host_ip: str) -> str:
     v = CFG.video
     return (
-        f"nvarguscamerasrc sensor-id=0 "
-        f"! video/x-raw(memory:NVMM),width={v.width},height={v.height},"
-        f"framerate={v.fps}/1,format=NV12 "
-        f"! nvvidconv "
-        f"! video/x-raw(memory:NVMM),format=NV12 "
-        f"! nvv4l2h264enc "
-        f"insert-sps-pps=true iframeinterval={v.iframe_interval} "
-        f"idrinterval={v.iframe_interval} maxperf-enable=1 preset-level=1 "
-        f"bitrate={v.bitrate_kbps * 1000} control-rate=1 "
-        f"! h264parse config-interval=1 "
-        f"! rtph264pay pt=96 config-interval=1 mtu=1400 "
-        f"! udpsink host={host_ip} port={CFG.network.video_port} sync=false async=false"
+        "nvarguscamerasrc sensor-id=0 "
+        "! video/x-raw(memory:NVMM),width={w},height={h},"
+        "framerate={f}/1,format=NV12 "
+        "! nvvidconv "
+        "! video/x-raw(memory:NVMM),format=NV12 "
+        "! nvv4l2h264enc "
+        "insert-sps-pps=true iframeinterval={iv} "
+        "idrinterval={iv} maxperf-enable=1 preset-level=1 "
+        "bitrate={br} control-rate=1 "
+        "! h264parse config-interval=1 "
+        "! rtph264pay pt=96 config-interval=1 mtu=1400 "
+        "! udpsink host={host} port={port} sync=false async=false"
+    ).format(
+        w=v.width,
+        h=v.height,
+        f=v.fps,
+        iv=v.iframe_interval,
+        br=v.bitrate_kbps * 1000,
+        host=host_ip,
+        port=CFG.network.video_port,
     )
+    # PY36: f-strings sí funcionan en 3.6 (PEP 498), pero preferí `.format()`
+    #       aquí porque el original encadenaba varias f-strings anidadas con
+    #       parámetros calculados (`v.bitrate_kbps * 1000`) y así queda más
+    #       claro lo que se inyecta. Es estilo, no obligatorio.
 
 
 class VideoPipeline:
     """Wraps la pipeline GStreamer y su MainLoop GLib."""
 
-    def __init__(self) -> None:
+    # PY36: `loop` explícito por el mismo motivo que en Esp32Link: necesitamos
+    #       `run_in_executor` y no hay `get_running_loop()` en 3.6.
+    def __init__(self, loop=None):  # PY36: añadido loop
+        self._loop = loop or asyncio.get_event_loop()  # PY36: añadido
         self._pipeline = None
-        self._glib_loop: Optional[GLib.MainLoop] = None
-        self._glib_thread: Optional[asyncio.Task] = None
-        self._current_host: str = ""
+        # PY36: `Optional[GLib.MainLoop]` preservado.
+        self._glib_loop = None  # type: Optional["GLib.MainLoop"]
+        # PY36: Se cambia anotación `Optional[asyncio.Task]` a simple None,
+        #       porque `run_in_executor` devuelve un `Future`, no un `Task`
+        #       (esto ya era un bug menor en el original).
+        self._glib_thread = None
+        self._current_host = ""  # type: str
 
     async def start(self, host_ip: str) -> None:
         if not _GST_AVAILABLE:
@@ -96,7 +94,7 @@ class VideoPipeline:
 
         if self._pipeline is not None:
             if host_ip == self._current_host:
-                return  # ya estamos corriendo hacia ese host
+                return
             await self.stop()
 
         Gst.init(None)
@@ -107,7 +105,8 @@ class VideoPipeline:
             self._pipeline = Gst.parse_launch(pipeline_str)
         except GLib.Error as exc:
             state.video_state = "error"
-            bus.emit(Ev.VIDEO_STATE, f"parse_launch: {exc}")
+            # PY36: `.format()` para evitar f-string con expresión tras colon.
+            bus.emit(Ev.VIDEO_STATE, "parse_launch: {}".format(exc))
             log.exception("parse_launch falló")
             return
 
@@ -119,10 +118,11 @@ class VideoPipeline:
         self._pipeline.set_state(Gst.State.PLAYING)
         self._current_host = host_ip
         state.video_state = "running"
-        bus.emit(Ev.VIDEO_STATE, f"running -> {host_ip}:{CFG.network.video_port}")
+        bus.emit(Ev.VIDEO_STATE, "running -> {}:{}".format(host_ip, CFG.network.video_port))
 
-        # GLib MainLoop en thread asyncio-friendly
-        loop = asyncio.get_running_loop()
+        # PY36: `loop = asyncio.get_running_loop()` no existe en 3.6.
+        #       Usamos el loop guardado en __init__.
+        loop = self._loop
         self._glib_loop = GLib.MainLoop()
         self._glib_thread = loop.run_in_executor(None, self._glib_loop.run)
 
@@ -153,7 +153,7 @@ class VideoPipeline:
     def _on_error(self, _bus, msg) -> None:
         err, dbg = msg.parse_error()
         state.video_state = "error"
-        bus.emit(Ev.VIDEO_STATE, f"error: {err.message}")
+        bus.emit(Ev.VIDEO_STATE, "error: {}".format(err.message))
         log.error("GStreamer error: %s (%s)", err.message, dbg)
 
     def _on_eos(self, _bus, _msg) -> None:
@@ -162,9 +162,12 @@ class VideoPipeline:
         log.info("GStreamer EOS")
 
 
-async def run_video_pipeline(stop_event: asyncio.Event) -> None:
+# PY36: El original no recibía `loop`. Lo añadimos para poder pasarlo al
+#       `VideoPipeline` (que lo necesita para `run_in_executor`).
+async def run_video_pipeline(stop_event: asyncio.Event,
+                             loop: asyncio.AbstractEventLoop) -> None:
     """Gestiona la pipeline en función del host detectado."""
-    pipe = VideoPipeline()
+    pipe = VideoPipeline(loop=loop)  # PY36: loop propagado
 
     # Si al arrancar ya tenemos host (por CLI), lanzamos inmediatamente.
     if CFG.network.host_ip:
@@ -174,9 +177,6 @@ async def run_video_pipeline(stop_event: asyncio.Event) -> None:
         await pipe.retarget(ip)
 
     async def on_host_offline(_data) -> None:
-        # Política: mantenemos la pipeline viva. UDP no necesita destino "activo"
-        # y si volvemos a ver al host ya estaremos enviando. Sólo paramos si
-        # cambia la IP.
         pass
 
     bus.on(Ev.HOST_ONLINE, on_host_online)

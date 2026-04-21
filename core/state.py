@@ -1,5 +1,9 @@
 """Estado compartido del servicio."""
-from dataclasses import dataclass, field
+# PY36: Este archivo no tenía `from __future__ import annotations` en el original,
+#       así que no hay nada que quitar. Tampoco usa genéricos built-in ni el
+#       operador `|`. Las dataclasses requieren `pip install dataclasses` (backport
+#       oficial para 3.6) o Python 3.7+.
+from dataclasses import dataclass
 import time
 
 

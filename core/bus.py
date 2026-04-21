@@ -12,23 +12,30 @@ Esto desacopla:
   - El heartbeat de los motores (el watchdog emite un evento, el link ESP32 lo
     consume y envía STOP).
 """
-from __future__ import annotations
-
+# PY36: Eliminado `from __future__ import annotations`.
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Optional
+
+# PY36: `Dict`, `List` desde typing (en 3.6 no se puede escribir `dict[...]`
+#       ni `list[...]` como anotaciones). `Union` reemplaza al operador `|`.
+from typing import Any, Awaitable, Callable, Dict, List, Union
 
 log = logging.getLogger(__name__)
 
-Callback = Callable[[Any], Optional[Awaitable[None]]]
+# PY36: El alias original era
+#           Callable[[Any], Awaitable[None] | None]
+#       El `|` entre tipos requiere 3.10. Lo reescribimos con `Union`.
+Callback = Callable[[Any], Union[Awaitable[None], None]]
 
 
 class EventBus:
     """Bus pub/sub ligero sobre asyncio."""
 
     def __init__(self) -> None:
-        self._subs: dict[str, list[Callback]] = defaultdict(list)
+        # PY36: `dict[str, list[Callback]]` como anotación no funciona en 3.6.
+        #       Usamos `Dict[str, List[Callback]]` de `typing`.
+        self._subs = defaultdict(list)  # type: Dict[str, List[Callback]]
 
     def on(self, event: str, cb: Callback) -> None:
         self._subs[event].append(cb)
@@ -47,7 +54,12 @@ class EventBus:
             try:
                 result = cb(data)
                 if asyncio.iscoroutine(result):
-                    asyncio.create_task(result)
+                    # PY36: `asyncio.create_task` no existe (se añadió en 3.7).
+                    #       Usamos `ensure_future`, que toma el loop actual si
+                    #       hay uno en ejecución. Si `emit` se llama desde un
+                    #       contexto sin loop activo, esto lanzará RuntimeError,
+                    #       igual que el `create_task` original.
+                    asyncio.ensure_future(result)
             except Exception:
                 log.exception("Error en callback de evento %s", event)
 
