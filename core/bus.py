@@ -76,6 +76,9 @@ class Ev:
     CMD_MOTOR = "cmd.motor"              # dict {left, right, aux, seq}
     CMD_HEARTBEAT = "cmd.heartbeat"      # dict {seq}
     CMD_EMERGENCY = "cmd.emergency"      # dict {seq}
+    CMD_PID_PARAM = "cmd.pid_param"      # dict {ctrl_id, param_id, value, seq}
+    CMD_SETPOINT = "cmd.setpoint"        # dict {comp_id, value, seq}
+    CMD_MODE = "cmd.mode"                # dict {mode, seq}
 
     # Estados de conexión / watchdog
     HOST_ONLINE = "host.online"          # str (ip)

@@ -27,6 +27,9 @@ from protocol.cobs_frame import (
     build_heartbeat,
     build_motor,
     build_vel,
+    build_pid_param,
+    build_setpoint_comp,
+    build_mode_cmd,
 )
 
 log = logging.getLogger(__name__)
@@ -71,6 +74,9 @@ class Esp32Link:
         bus.on(Ev.CMD_MOTOR,  self._on_motor_cmd)
         bus.on(Ev.CMD_VEL,    self._on_vel_cmd)
         bus.on(Ev.STOP_MOTORS, self._on_stop_motors)
+        bus.on(Ev.CMD_PID_PARAM, self._on_pid_param)
+        bus.on(Ev.CMD_SETPOINT, self._on_setpoint)
+        bus.on(Ev.CMD_MODE, self._on_mode)
 
     def _on_motor_cmd(self, data: dict) -> None:
         if state.emergency_active:
@@ -94,7 +100,30 @@ class Esp32Link:
         except asyncio.QueueFull:
             pass
 
-    # ---- Puerto, lectura, escritura, watchdog: iguales que en el original ----
+    def _on_pid_param(self, data: dict) -> None:
+        try:
+            pkt = build_pid_param(data["ctrl_id"], data["param_id"], data["value"])
+            self._tx_queue.put_nowait(pkt)
+        except (KeyError, asyncio.QueueFull):
+            pass
+
+    def _on_setpoint(self, data: dict) -> None:
+        try:
+            pkt = build_setpoint_comp(data["comp_id"], data["value"])
+            self._tx_queue.put_nowait(pkt)
+        except (KeyError, asyncio.QueueFull):
+            pass
+
+    def _on_mode(self, data: dict) -> None:
+        try:
+            pkt = build_mode_cmd(data["mode"])
+            self._tx_queue.put_nowait(pkt)
+        except (KeyError, asyncio.QueueFull):
+            pass
+
+    # --------------------------------------------------------
+    # Puerto
+    # --------------------------------------------------------
     def _open_port(self) -> bool:
         try:
             self._ser = serial.Serial(

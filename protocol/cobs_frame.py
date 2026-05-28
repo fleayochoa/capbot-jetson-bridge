@@ -28,6 +28,9 @@ class SerMsgType(IntEnum):
     BRAKE_ON  = 0x11
     HEARTBEAT = 0x12
     VEL_CMD   = 0x13
+    PID_PARAM = 0x14      # ctrl_id(1) param_id(1) float32(4)
+    SETPOINT_COMP = 0x15  # comp_id(1) reserved(1) float32(4)
+    MODE_CMD = 0x16       # mode(1)
     TELEMETRY = 0x20
     ESP_HELLO = 0x21
 
@@ -152,3 +155,18 @@ def build_brake() -> bytes:
 
 def build_heartbeat() -> bytes:
     return SerFrame(SerMsgType.HEARTBEAT, b"").pack()
+
+
+def build_pid_param(ctrl_id: int, param_id: int, value: float) -> bytes:
+    payload = struct.pack("<BBf", ctrl_id & 0xFF, param_id & 0xFF, value)
+    return SerFrame(SerMsgType.PID_PARAM, payload).pack()
+
+
+def build_setpoint_comp(comp_id: int, value: float) -> bytes:
+    payload = struct.pack("<BBf", comp_id & 0xFF, 0, value)
+    return SerFrame(SerMsgType.SETPOINT_COMP, payload).pack()
+
+
+def build_mode_cmd(mode: int) -> bytes:
+    payload = struct.pack("<B", mode & 0xFF)
+    return SerFrame(SerMsgType.MODE_CMD, payload).pack()

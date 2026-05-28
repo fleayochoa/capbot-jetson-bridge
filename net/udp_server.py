@@ -21,7 +21,11 @@ from typing import Optional, Tuple  # PY36: añadido
 from config import CFG
 from core.bus import Ev, bus
 from core.state import state
-from protocol.udp_frame import Frame, MsgType, build_ack, decode_motor
+from protocol.udp_frame import (
+    Frame, MsgType, build_ack,
+    decode_motor, decode_pid_param, decode_setpoint_comp, decode_mode,
+    SETPOINT_LIN_VEL,
+)
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +86,26 @@ class UdpCommandServer(asyncio.DatagramProtocol):
             bus.emit(Ev.CMD_EMERGENCY, {"seq": frame.seq})
             bus.emit(Ev.STOP_MOTORS, None)
             log.warning("PARO DE EMERGENCIA recibido (seq=%d)", frame.seq)
+        elif frame.msg_type == MsgType.CMD_PID_PARAM:
+            try:
+                ctrl_id, param_id, value = decode_pid_param(frame.payload)
+            except Exception:
+                return
+            bus.emit(Ev.CMD_PID_PARAM, {"ctrl_id": ctrl_id, "param_id": param_id, "value": value, "seq": frame.seq})
+        elif frame.msg_type == MsgType.CMD_SETPOINT_COMP:
+            try:
+                comp_id, value = decode_setpoint_comp(frame.payload)
+            except Exception:
+                return
+            if comp_id >= SETPOINT_LIN_VEL:
+                return  # velocidad lineal y angular se ignoran
+            bus.emit(Ev.CMD_SETPOINT, {"comp_id": comp_id, "value": value, "seq": frame.seq})
+        elif frame.msg_type == MsgType.CMD_MODE:
+            try:
+                mode = decode_mode(frame.payload)
+            except Exception:
+                return
+            bus.emit(Ev.CMD_MODE, {"mode": mode, "seq": frame.seq})
         else:
             log.debug("tipo desconocido: 0x%02X", frame.msg_type)
             return

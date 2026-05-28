@@ -22,7 +22,29 @@ class MsgType(IntEnum):
     CMD_MOTOR = 0x01
     CMD_HEARTBEAT = 0x02
     CMD_EMERGENCY = 0x03
+    CMD_PID_PARAM = 0x04      # payload: ctrl_id(1) param_id(1) float32(4)
+    CMD_SETPOINT_COMP = 0x05  # payload: comp_id(1) reserved(1) float32(4)
+    CMD_MODE = 0x06           # payload: mode(1) reserved(5); 0=manual 1=autónomo
     ACK = 0x81
+
+
+# Controller IDs para CMD_PID_PARAM
+CTRL_LINEAR_POS = 0
+CTRL_LINEAR_VEL = 1
+CTRL_ANG_POS = 2
+CTRL_ANG_VEL = 3
+
+# Parameter IDs para CMD_PID_PARAM
+PARAM_KP = 0
+PARAM_KI = 1
+PARAM_KD = 2
+
+# Component IDs para CMD_SETPOINT_COMP (solo 0-2 se procesan; 3-4 son velocidades ignoradas)
+SETPOINT_X_POS = 0
+SETPOINT_Y_POS = 1
+SETPOINT_ANG_POS = 2
+SETPOINT_LIN_VEL = 3   # ignorado en Jetson
+SETPOINT_ANG_VEL = 4   # ignorado en Jetson
 
 
 def crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
@@ -81,3 +103,21 @@ def build_ack(seq: int) -> bytes:
     """ACK: payload[0..3] = seq reconocido, resto ceros."""
     payload = struct.pack("<I", seq) + b"\x00\x00"
     return Frame(MsgType.ACK, seq, payload).pack()
+
+
+def decode_pid_param(payload: bytes) -> Tuple[int, int, float]:
+    """Decodifica CMD_PID_PARAM. Retorna (ctrl_id, param_id, value)."""
+    ctrl_id, param_id, value = struct.unpack("<BBf", payload[:6])
+    return ctrl_id, param_id, value
+
+
+def decode_setpoint_comp(payload: bytes) -> Tuple[int, float]:
+    """Decodifica CMD_SETPOINT_COMP. Retorna (comp_id, value)."""
+    comp_id, _, value = struct.unpack("<BBf", payload[:6])
+    return comp_id, value
+
+
+def decode_mode(payload: bytes) -> int:
+    """Decodifica CMD_MODE. Retorna el modo (0=manual, 1=autónomo)."""
+    (mode,) = struct.unpack("<B", payload[:1])
+    return mode
