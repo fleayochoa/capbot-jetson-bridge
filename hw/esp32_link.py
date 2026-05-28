@@ -1,28 +1,20 @@
 """Enlace serial con el ESP32 usando COBS+CRC16.
 
-Responsabilidades:
-  1. Abrir/reabrir el puerto serial (reconexión automática).
-  2. Leer bytes, alimentar el SerialFrameBuffer, decodificar frames y
-     emitirlos al bus (p.ej. telemetría).
-  3. Consumir del bus eventos de comando (motor, stop, emergencia) y
-     escribirlos al puerto.
-  4. Mandar heartbeat propio al ESP32 cada N ms para que el ESP32 pueda
-     ejercer SU watchdog (si no ve nuestro heartbeat en ME ms, freno).
-
-El I/O serial se ejecuta en un executor para no bloquear el loop asyncio
-(pyserial es síncrono). La escritura se serializa con una cola.
+Cambios vs version original:
+  - Nuevo handler on_vel_cmd: traduce Ev.CMD_VEL del bus a VEL_CMD por serial.
+  - Permite que el bridge ROS y el dashboard manual coexistan: si llegan
+    VEL_CMD frescos al ESP32, este tiene prioridad sobre MOTOR_CMD (logica
+    en firmware).
 """
-# PY36: Eliminado `from __future__ import annotations`.
 import asyncio
 import logging
 import time
 
-# PY36: Optional en vez de `X | None` (3.10+).
-from typing import Optional  # PY36: añadido
+from typing import Optional
 
 try:
     import serial
-except ImportError:  # pragma: no cover
+except ImportError:
     serial = None
 
 from config import CFG
@@ -34,31 +26,19 @@ from protocol.cobs_frame import (
     build_brake,
     build_heartbeat,
     build_motor,
+    build_vel,
 )
 
 log = logging.getLogger(__name__)
 
-# Heartbeat al ESP32: más frecuente que su watchdog para no despertar paro.
-# Si el ESP32 usa ME=200ms, mandamos cada 50ms.
 _HEARTBEAT_INTERVAL_S = 0.05
 
 
 class Esp32Link:
-    # PY36: El constructor ahora recibe el loop explícitamente. Motivo:
-    #       - En el original, `asyncio.Queue()` se construía en `__init__`
-    #         sin loop. En 3.6 eso intenta capturar `get_event_loop()` y
-    #         si no hay uno creado todavía (o está asociado a otro hilo)
-    #         se dispara RuntimeError.
-    #       - En 3.10+ Queue ya no necesita loop; en 3.8 se deprecó el
-    #         parámetro; en 3.6 todavía es la forma recomendada.
-    def __init__(self, loop=None):  # PY36: añadido loop
-        self._loop = loop or asyncio.get_event_loop()  # PY36: añadido
-        # PY36: Anotación `serial.Serial | None` → `Optional[serial.Serial]`.
+    def __init__(self, loop=None):
+        self._loop = loop or asyncio.get_event_loop()
         self._ser = None  # type: Optional["serial.Serial"]
-        # PY36: Anotación `asyncio.Queue[bytes]` no se puede escribir en 3.6
-        #       (la Queue no es subscriptible antes de 3.9). Creamos sin
-        #       anotación genérica y pasamos `loop=` explícito.
-        self._tx_queue = asyncio.Queue(loop=self._loop)  # PY36: añadido loop=
+        self._tx_queue = asyncio.Queue(loop=self._loop)
         self._buffer = SerialFrameBuffer()
         self._running = False
 
@@ -71,13 +51,7 @@ class Esp32Link:
         self._running = True
         self._subscribe_bus()
 
-        # PY36: El original hacía `loop = asyncio.get_running_loop()` (3.7+).
-        #       Usamos el loop guardado en __init__ (que es el actual cuando
-        #       arranca el servicio).
         loop = self._loop
-
-        # PY36: `asyncio.create_task` no existe en 3.6. Usamos
-        #       `loop.create_task`, disponible desde 3.4.2.
         reader_task = loop.create_task(self._reader_loop())
         writer_task = loop.create_task(self._writer_loop())
         hb_task = loop.create_task(self._heartbeat_loop())
@@ -93,40 +67,44 @@ class Esp32Link:
                                  return_exceptions=True)
             self._close_port()
 
-    # --------------------------------------------------------
-    # Suscripciones a eventos
-    # --------------------------------------------------------
     def _subscribe_bus(self) -> None:
-        bus.on(Ev.CMD_MOTOR, self._on_motor_cmd)
+        bus.on(Ev.CMD_MOTOR,  self._on_motor_cmd)
+        bus.on(Ev.CMD_VEL,    self._on_vel_cmd)
         bus.on(Ev.STOP_MOTORS, self._on_stop_motors)
 
     def _on_motor_cmd(self, data: dict) -> None:
-        # Si hay emergencia activa o host offline, ignorar comandos de motor.
         if state.emergency_active:
             return
-        self._tx_queue.put_nowait(build_motor(data["left"], data["right"], data["aux"]))
+        try:
+            self._tx_queue.put_nowait(build_motor(data["left"], data["right"], data["aux"]))
+        except asyncio.QueueFull:
+            pass
+
+    def _on_vel_cmd(self, data: dict) -> None:
+        if state.emergency_active:
+            return
+        try:
+            self._tx_queue.put_nowait(build_vel(data["v_mms"], data["w_mrads"]))
+        except asyncio.QueueFull:
+            pass
 
     def _on_stop_motors(self, _data) -> None:
-        # Freno activo
         try:
             self._tx_queue.put_nowait(build_brake())
         except asyncio.QueueFull:
             pass
 
-    # --------------------------------------------------------
-    # Puerto
-    # --------------------------------------------------------
+    # ---- Puerto, lectura, escritura, watchdog: iguales que en el original ----
     def _open_port(self) -> bool:
         try:
             self._ser = serial.Serial(
                 port=CFG.serial.port,
                 baudrate=CFG.serial.baudrate,
-                timeout=0.05,         # polling no bloqueante largo
+                timeout=0.05,
                 write_timeout=0.2,
                 rtscts=False,
                 dsrdtr=False,
             )
-            # Drenar buffers de arranque (bootloader del ESP32 escupe texto)
             self._ser.reset_input_buffer()
             self._ser.reset_output_buffer()
             state.touch_esp32()
@@ -148,12 +126,7 @@ class Esp32Link:
             state.esp32_connected = False
             bus.emit(Ev.ESP32_OFFLINE, "port closed")
 
-    # --------------------------------------------------------
-    # Lectura
-    # --------------------------------------------------------
     async def _reader_loop(self) -> None:
-        # PY36: El original volvía a llamar a `asyncio.get_running_loop()`
-        #       aquí. Reutilizamos self._loop para consistencia.
         loop = self._loop
         while self._running:
             if self._ser is None or not self._ser.is_open:
@@ -161,7 +134,6 @@ class Esp32Link:
                     await asyncio.sleep(1.0)
                     continue
             try:
-                # Blocking read en executor para no trancar el loop
                 data = await loop.run_in_executor(None, self._read_available)
                 if data:
                     state.touch_esp32()
@@ -191,17 +163,13 @@ class Esp32Link:
             elif fr.msg_type == SerMsgType.ESP_HELLO:
                 log.info("ESP32 HELLO recibido")
             elif fr.msg_type == SerMsgType.HEARTBEAT:
-                pass  # opcional, ya actualizamos touch_esp32
+                pass
             else:
                 log.debug("frame serial desconocido: 0x%02X", fr.msg_type)
         except Exception:
             log.exception("Error procesando frame serial")
 
     def _handle_telemetry(self, payload: bytes) -> None:
-        """Telemetría: por defecto asumimos JSON UTF-8 para prototipar.
-
-        Si el firmware envía struct binario, aquí se deserializa.
-        """
         try:
             import json
             data = json.loads(payload.decode("utf-8"))
@@ -211,11 +179,8 @@ class Esp32Link:
             return
         bus.emit(Ev.TELEMETRY, data)
 
-    # --------------------------------------------------------
-    # Escritura
-    # --------------------------------------------------------
     async def _writer_loop(self) -> None:
-        loop = self._loop  # PY36: self._loop en vez de get_running_loop()
+        loop = self._loop
         while self._running:
             try:
                 pkt = await asyncio.wait_for(self._tx_queue.get(), timeout=0.2)
@@ -231,9 +196,6 @@ class Esp32Link:
                 log.warning("Error escribiendo serial: %s", exc)
                 self._close_port()
 
-    # --------------------------------------------------------
-    # Heartbeat al ESP32
-    # --------------------------------------------------------
     async def _heartbeat_loop(self) -> None:
         hb = build_heartbeat()
         while self._running:
@@ -247,9 +209,6 @@ class Esp32Link:
             except asyncio.CancelledError:
                 return
 
-    # --------------------------------------------------------
-    # Watchdog: si el ESP32 no manda nada en X, marcarlo offline.
-    # --------------------------------------------------------
     async def _esp32_watchdog(self) -> None:
         timeout_s = CFG.serial.rx_timeout_ms / 1000.0
         while self._running:

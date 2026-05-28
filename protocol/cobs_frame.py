@@ -1,33 +1,23 @@
 """Framing COBS + CRC16 para el enlace serial con el ESP32.
 
 Formato en la cola (del stream byte-serial):
-
     [ COBS-encoded( [type:1][len:1][payload:len][crc16:2] ) ][ 0x00 ]
 
-- El 0x00 final es el delimitador de frame (tras COBS no puede haber ceros
-  dentro del payload encoded, así que el delimitador es unívoco).
-- Dentro del payload bruto (antes de COBS) se envía: tipo, longitud, payload,
-  CRC16 del tipo+len+payload.
-
-Tipos de mensaje propuestos (ajustar con firmware del ESP32):
-    0x10  MOTOR_CMD   payload = <hhh> (left, right, aux)
-    0x11  BRAKE_ON    payload vacío (freno activo)
-    0x12  HEARTBEAT   payload vacío
-    0x20  TELEMETRY   payload = JSON UTF-8 o struct binario (a definir)
-    0x21  ESP_HELLO   payload vacío (el ESP32 saluda al arrancar)
-
-Este módulo sólo provee encode/decode genéricos; el mapeo de tipos vive en
-hw/esp32_link.py.
+Tipos de mensaje:
+    0x10  MOTOR_CMD   payload = <hhh> (left, right, aux)          PWM crudo, teleop
+    0x11  BRAKE_ON    payload vacio
+    0x12  HEARTBEAT   payload vacio
+    0x13  VEL_CMD     payload = <hh>  (v_mm_s, w_mrad_s)          Nav2 /cmd_vel
+    0x20  TELEMETRY   payload = JSON UTF-8
+    0x21  ESP_HELLO   payload vacio
 """
-# PY36: Eliminado `from __future__ import annotations`.
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
 
-# PY36: `List` de typing para `-> list[SerFrame]` original (3.9+).
-from typing import List  # PY36: añadido
+from typing import List
 
-from protocol.udp_frame import crc16_ccitt  # reutilizamos la misma CRC
+from protocol.udp_frame import crc16_ccitt
 
 
 DELIMITER = 0x00
@@ -35,19 +25,20 @@ DELIMITER = 0x00
 
 class SerMsgType(IntEnum):
     MOTOR_CMD = 0x10
-    BRAKE_ON = 0x11
+    BRAKE_ON  = 0x11
     HEARTBEAT = 0x12
+    VEL_CMD   = 0x13
     TELEMETRY = 0x20
     ESP_HELLO = 0x21
 
 
 # ------------------------------------------------------------
-# COBS (Consistent Overhead Byte Stuffing)
+# COBS
 # ------------------------------------------------------------
 def cobs_encode(data: bytes) -> bytes:
-    out = bytearray([0])       # placeholder del primer code
+    out = bytearray([0])
     code_idx = 0
-    code = 1                   # cuenta el code + bytes no-cero incluidos
+    code = 1
     for b in data:
         if b == 0:
             out[code_idx] = code
@@ -76,7 +67,7 @@ def cobs_decode(data: bytes) -> bytes:
             raise ValueError("cero inesperado en stream COBS")
         end = i + code
         if end > n:
-            raise ValueError("código COBS se pasa del final")
+            raise ValueError("codigo COBS se pasa del final")
         out.extend(data[i + 1:end])
         i = end
         if code < 0xFF and i < n:
@@ -102,38 +93,27 @@ class SerFrame:
 
     @classmethod
     def unpack(cls, encoded: bytes) -> "SerFrame":
-        """encoded NO incluye el delimitador final."""
         raw = cobs_decode(encoded)
         if len(raw) < 4:
             raise ValueError("frame truncado")
         msg_type, length = raw[0], raw[1]
         if len(raw) != 2 + length + 2:
-            # PY36: f-strings funcionan en 3.6 sin problema; las dejamos.
             raise ValueError("longitud inconsistente: decl={}, real={}".format(
                 length, len(raw) - 4))
         payload = raw[2:2 + length]
         (crc_recv,) = struct.unpack("<H", raw[2 + length:])
         expected = crc16_ccitt(raw[:2 + length])
         if crc_recv != expected:
-            raise ValueError("CRC serial inválido")
+            raise ValueError("CRC serial invalido")
         return cls(msg_type=msg_type, payload=payload)
 
 
-# ------------------------------------------------------------
-# Stream parser (ESP32 manda bytes, aquí los acumulamos)
-# ------------------------------------------------------------
 class SerialFrameBuffer:
-    """Acumula bytes y entrega frames completos cuando ve 0x00."""
-
     def __init__(self, max_frame_bytes: int = 512):
         self._buf = bytearray()
         self._max = max_frame_bytes
 
-    # PY36: Firma original `-> list[SerFrame]`. En 3.6 no se puede subscribir
-    #       `list` como tipo genérico → `List[SerFrame]`.
     def feed(self, data: bytes) -> List[SerFrame]:
-        # PY36: Igual con la variable local anotada: usamos anotación de tipo
-        #       como comentario para no depender del PEP 526 con genéricos.
         frames = []  # type: List[SerFrame]
         for b in data:
             if b == DELIMITER:
@@ -141,23 +121,29 @@ class SerialFrameBuffer:
                     try:
                         frames.append(SerFrame.unpack(bytes(self._buf)))
                     except ValueError:
-                        # Frame corrupto: descartar silenciosamente
                         pass
                     self._buf.clear()
             else:
                 self._buf.append(b)
                 if len(self._buf) > self._max:
-                    # Desincronizados: purgar hasta próximo delimitador
                     self._buf.clear()
         return frames
 
 
 # ------------------------------------------------------------
-# Helpers de alto nivel
+# Helpers
 # ------------------------------------------------------------
 def build_motor(left: int, right: int, aux: int = 0) -> bytes:
     payload = struct.pack("<hhh", left, right, aux)
     return SerFrame(SerMsgType.MOTOR_CMD, payload).pack()
+
+
+def build_vel(v_mms: int, w_mrad_s: int) -> bytes:
+    """Velocidad lineal en mm/s y angular en mrad/s. Saturado a int16."""
+    v_mms    = max(-32768, min(32767, int(v_mms)))
+    w_mrad_s = max(-32768, min(32767, int(w_mrad_s)))
+    payload = struct.pack("<hh", v_mms, w_mrad_s)
+    return SerFrame(SerMsgType.VEL_CMD, payload).pack()
 
 
 def build_brake() -> bytes:
