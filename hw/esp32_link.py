@@ -16,6 +16,7 @@ El I/O serial se ejecuta en un executor para no bloquear el loop asyncio
 import asyncio
 import logging
 import time
+import struct
 
 # PY36: Optional en vez de `X | None` (3.10+).
 from typing import Optional  # PY36: añadido
@@ -44,7 +45,8 @@ log = logging.getLogger(__name__)
 # Heartbeat al ESP32: más frecuente que su watchdog para no despertar paro.
 # Si el ESP32 usa ME=200ms, mandamos cada 50ms.
 _HEARTBEAT_INTERVAL_S = 0.05
-
+_TELEM_FMT  = "<BBhh" + "f" * 12 + "HH"
+_TELEM_SIZE = struct.calcsize(_TELEM_FMT)  # 58
 
 class Esp32Link:
     # PY36: El constructor ahora recibe el loop explícitamente. Motivo:
@@ -224,17 +226,23 @@ class Esp32Link:
             log.exception("Error procesando frame serial")
 
     def _handle_telemetry(self, payload: bytes) -> None:
-        """Telemetría: por defecto asumimos JSON UTF-8 para prototipar.
-
-        Si el firmware envía struct binario, aquí se deserializa.
-        """
-        try:
-            import json
-            data = json.loads(payload.decode("utf-8"))
-            if not isinstance(data, dict):
-                return
-        except (UnicodeDecodeError, ValueError):
+        """Telemetría binaria de tamaño fijo (ver buildPayload en el ESP32)."""
+        if len(payload) != _TELEM_SIZE:
             return
+        (schema, mode, pwm_l, pwm_r,
+        ox, oy, oa, ov, ow,
+        spx, spy, spa, spv, spw,
+        epos, eang, t1, t2) = struct.unpack(_TELEM_FMT, payload)
+        if schema != 1:
+            return  # esquema desconocido -> descartar
+        data = {
+            "mode": "auto" if mode else "manual",
+            "u":   {"pwm_left": pwm_l, "pwm_right": pwm_r},
+            "odo": {"x": ox, "y": oy, "a": oa, "v": ov, "w": ow},
+            "sp":  {"x": spx, "y": spy, "a": spa, "v": spv, "w": spw},
+            "error": {"pos": epos, "ang": eang},
+            "tof": {"t1": t1, "t2": t2},
+        }
         bus.emit(Ev.TELEMETRY, data)
 
     # --------------------------------------------------------
